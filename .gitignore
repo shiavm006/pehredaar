@@ -1,3 +1,11 @@
+# Secrets + local runtime
+.env
+logs/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
 # Frigate runtime / recordings — keep config/config.yml in git
 media/
 config/*.db

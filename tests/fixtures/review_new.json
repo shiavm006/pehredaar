@@ -1,0 +1,51 @@
+{
+  "type": "new",
+  "before": {
+    "id": "1793221724.649626-by5z8a",
+    "camera": "shopcam",
+    "start_time": 1793221724.649626,
+    "end_time": null,
+    "severity": "alert",
+    "thumb_path": "/media/frigate/clips/review/thumb-shopcam-1793221724.649626-by5z8a.webp",
+    "data": {
+      "detections": [
+        "1793221724.483321-ybdijc"
+      ],
+      "objects": [
+        "person"
+      ],
+      "verified_objects": [],
+      "sub_labels": [],
+      "zones": [
+        "shop_floor"
+      ],
+      "audio": [],
+      "thumb_time": 1793221725.266566,
+      "metadata": null
+    }
+  },
+  "after": {
+    "id": "1793221724.649626-by5z8a",
+    "camera": "shopcam",
+    "start_time": 1793221724.649626,
+    "end_time": null,
+    "severity": "alert",
+    "thumb_path": "/media/frigate/clips/review/thumb-shopcam-1793221724.649626-by5z8a.webp",
+    "data": {
+      "detections": [
+        "1793221724.483321-ybdijc"
+      ],
+      "objects": [
+        "person"
+      ],
+      "verified_objects": [],
+      "sub_labels": [],
+      "zones": [
+        "shop_floor"
+      ],
+      "audio": [],
+      "thumb_time": 1793221725.266566,
+      "metadata": null
+    }
+  }
+}
