@@ -1,0 +1,39 @@
+# Pehredaar — video + detection base (Mosquitto + Frigate).
+# MediaMTX/ffmpeg RTSP runs on the Mac host via ./scripts/start_camera.sh
+# (not in Compose — avfoundation needs native macOS camera access).
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: pehredaar-mosquitto
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+
+  frigate:
+    # Native Apple Silicon image; CPU detector (no GPU passthrough on Docker Desktop).
+    image: ghcr.io/blakeblackshear/frigate:stable-standard-arm64
+    container_name: pehredaar-frigate
+    restart: unless-stopped
+    depends_on:
+      - mosquitto
+    shm_size: "256mb"
+    ports:
+      # Authenticated UI/API (Frigate 0.14+)
+      - "8971:8971"
+      # Unauthenticated UI for local testing. Host 5001 avoids macOS AirPlay on :5000.
+      - "5001:5000"
+    volumes:
+      - ./config:/config
+      - ./media:/media/frigate
+      - type: tmpfs
+        target: /tmp/cache
+        tmpfs:
+          size: 1000000000
+    environment:
+      FRIGATE_RTSP_PASSWORD: pehredaar
+    extra_hosts:
+      # Frigate → MediaMTX on the Mac host at host.docker.internal:8554
+      - "host.docker.internal:host-gateway"

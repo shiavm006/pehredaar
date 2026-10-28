@@ -1,0 +1,76 @@
+# Pehredaar — Frigate config for local Mac webcam stand-in ("shopcam").
+# Person-only tracking + full-frame shop_floor zone → alert reviews → MQTT.
+
+mqtt:
+  enabled: true
+  host: mosquitto
+  port: 1883
+
+# Docker Desktop on Mac: no GPU/NPU passthrough → in-container CPU (TFLite).
+detectors:
+  cpu1:
+    type: cpu
+    num_threads: 3
+
+# Short retention for local testing.
+record:
+  enabled: true
+  continuous:
+    days: 0
+  motion:
+    days: 1
+  alerts:
+    retain:
+      days: 2
+  detections:
+    retain:
+      days: 1
+
+snapshots:
+  enabled: true
+  retain:
+    default: 2
+
+objects:
+  track:
+    - person
+
+cameras:
+  shopcam:
+    enabled: true
+    ffmpeg:
+      inputs:
+        - path: rtsp://host.docker.internal:8554/shopcam
+          input_args: preset-rtsp-restream
+          roles:
+            - detect
+            - record
+    detect:
+      # Must be true in config — UI-only toggle does not survive restarts.
+      enabled: true
+      width: 1280
+      height: 720
+      fps: 5
+    zones:
+      # Full frame: laptop webcams crop feet; inset zones miss person bottom-centre.
+      shop_floor:
+        coordinates: 0,0,1,0,1,1,0,1
+        # Default inertia 3 delays zone membership → first MQTT review is
+        # severity "detection"; 1 makes person land in shop_floor immediately.
+        inertia: 1
+        objects:
+          - person
+    # Frigate 0.18: empty mqtt.required_zones can silently suppress
+    # frigate/events + frigate/reviews even when review items are created.
+    mqtt:
+      required_zones:
+        - shop_floor
+    review:
+      alerts:
+        required_zones:
+          - shop_floor
+      # After-hours shop alerts only — skip detection-severity reviews so the
+      # first frigate/reviews message is type=new severity=alert.
+      detections:
+        enabled: false
+version: 0.18-0

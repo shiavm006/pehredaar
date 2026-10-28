@@ -1,0 +1,20 @@
+# Frigate runtime / recordings — keep config/config.yml in git
+media/
+config/*.db
+config/*.db-*
+config/backup_config.yaml
+config/backup.db
+config/model_cache/
+config/.jwt_secret
+config/.exports
+config/.vacuum
+config/.runtime_state.json
+config/.runtime_state.json.lock
+config/.search_stats.json
+config/go2rtc_homekit.yml
+testdata/*
+!testdata/.gitkeep
+*.pid
+.DS_Store
+auto.crt
+auto.key
