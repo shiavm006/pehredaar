@@ -93,6 +93,8 @@ class Brain:
                 jpeg,
                 gemini_api_key=settings.gemini_api_key,
                 groq_api_key=settings.groq_api_key,
+                gemini_model=settings.gemini_model,
+                gemini_fallback_model=settings.gemini_fallback_model,
                 groq_model=settings.groq_vision_model,
             )
             print("=== vision verdict ===", flush=True)
@@ -151,10 +153,8 @@ class Brain:
                         log.error("call failed: %s", result.error)
                     elif result.execution_id:
                         log.info("call execution_id=%s", result.execution_id)
-            elif action.name == "whatsapp_placeholder":
-                log.info("WhatsApp placeholder (not sent): %s", verdict.description_hi)
             else:
-                log.info("log_only — no outbound notify")
+                log.info("%s — no outbound notify", action.name)
 
         except FrigateError as exc:
             record["error"] = str(exc)

@@ -16,6 +16,8 @@ class Settings:
     mqtt_topic: str
     frigate_base_url: str
     gemini_api_key: str
+    gemini_model: str
+    gemini_fallback_model: str
     groq_api_key: str
     groq_vision_model: str
     bolna_api_key: str
@@ -47,11 +49,11 @@ def load_settings(env_file: Path | None = None) -> Settings:
         mqtt_topic=os.getenv("MQTT_TOPIC", "frigate/reviews"),
         frigate_base_url=os.getenv("FRIGATE_BASE_URL", "http://localhost:5001"),
         gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
+        gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
+        or "gemini-3.8-flash",
+        gemini_fallback_model=os.getenv("GEMINI_FALLBACK_MODEL", "").strip(),
         groq_api_key=os.getenv("GROQ_API_KEY", "").strip(),
-        groq_vision_model=os.getenv(
-            "GROQ_VISION_MODEL",
-            "meta-llama/llama-4-scout-17b-16e-instruct",
-        ).strip(),
+        groq_vision_model=os.getenv("GROQ_VISION_MODEL", "").strip(),
         bolna_api_key=os.getenv("BOLNA_API_KEY", "").strip(),
         bolna_agent_id=os.getenv("BOLNA_AGENT_ID", "").strip(),
         owner_phone=os.getenv("OWNER_PHONE", "").strip(),

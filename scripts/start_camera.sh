@@ -71,6 +71,10 @@ fi
 cleanup() {
   echo ""
   echo "Stopping ffmpeg publisher..."
+  # Video harness sets PEHREDAAR_KEEP_MTX=1 so sequential clips reuse MediaMTX.
+  if [[ "${PEHREDAAR_KEEP_MTX:-}" == "1" ]]; then
+    return 0
+  fi
   if [[ -f /tmp/pehredaar-mediamtx.pid ]]; then
     MTX_PID="$(cat /tmp/pehredaar-mediamtx.pid)"
     if kill -0 "$MTX_PID" 2>/dev/null; then

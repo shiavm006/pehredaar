@@ -9,16 +9,11 @@ from brain.vision import VisionVerdict
 
 @dataclass(frozen=True)
 class Action:
-    name: str  # log_only | whatsapp_placeholder | call_owner
+    name: str  # log_only | call_owner
     detail: str
 
 
 def decide(verdict: VisionVerdict) -> Action:
-    if verdict.category == "no_threat":
-        return Action("log_only", "no_threat — log only")
-    if verdict.category == "loitering":
-        return Action(
-            "whatsapp_placeholder",
-            "loitering — WhatsApp placeholder (log only for now)",
-        )
+    if verdict.category in ("no_threat", "loitering"):
+        return Action("log_only", f"{verdict.category} — log only")
     return Action("call_owner", f"{verdict.category} — call owner")

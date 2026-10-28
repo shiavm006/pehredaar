@@ -1,4 +1,4 @@
-"""Snapshot → Gemini (primary) → Groq vision (retry) → fail-safe verdict."""
+"""Snapshot → Gemini → Gemini fallback → Groq → fail-safe verdict."""
 
 from __future__ import annotations
 
@@ -6,8 +6,10 @@ import base64
 import json
 import logging
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Callable
 
 log = logging.getLogger("pehredaar.vision")
 
@@ -19,6 +21,9 @@ CATEGORIES = (
     "no_threat",
 )
 CONFIDENCES = ("high", "medium", "low")
+
+VISION_BUDGET_S = 8.0
+GEMINI_RETRY_SLEEP_S = 1.0
 
 VISION_PROMPT = """You are a shop security camera analyst for after-hours monitoring.
 
@@ -46,7 +51,7 @@ class VisionVerdict:
     confidence: str
     description_en: str
     description_hi: str
-    source: str  # gemini | groq | failsafe
+    source: str  # e.g. gemini:gemini-3.8-flash | groq:<model> | failsafe
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -98,14 +103,57 @@ def _failsafe() -> VisionVerdict:
     )
 
 
-def _gemini(jpeg: bytes, api_key: str) -> VisionVerdict:
+def _is_transient(exc: BaseException) -> bool:
+    """True for 503 / 429 / timeout-like failures worth one retry."""
+    if isinstance(exc, (TimeoutError, FuturesTimeout)):
+        return True
+    code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+    if code in (429, 503):
+        return True
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status in (429, 503):
+        return True
+    text = str(exc).lower()
+    needles = (
+        "429",
+        "503",
+        "timeout",
+        "timed out",
+        "unavailable",
+        "resource_exhausted",
+        "resource exhausted",
+        "rate limit",
+        "too many requests",
+        "service unavailable",
+    )
+    return any(n in text for n in needles)
+
+
+def _remaining(deadline: float) -> float:
+    return deadline - time.monotonic()
+
+
+def _run_within(fn: Callable[[], VisionVerdict], deadline: float, label: str) -> VisionVerdict:
+    rem = _remaining(deadline)
+    if rem <= 0.05:
+        raise TimeoutError(f"vision budget exhausted before {label}")
+    log.info("vision attempt: %s (%.1fs left)", label, rem)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(fn)
+        try:
+            return fut.result(timeout=rem)
+        except FuturesTimeout as exc:
+            raise TimeoutError(f"{label} exceeded remaining budget") from exc
+
+
+def _gemini(jpeg: bytes, api_key: str, model: str) -> VisionVerdict:
     from google import genai
     from google.genai import types
 
     client = genai.Client(api_key=api_key)
     image_part = types.Part.from_bytes(data=jpeg, mime_type="image/jpeg")
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model=model,
         contents=[VISION_PROMPT, image_part],
         config=types.GenerateContentConfig(
             temperature=0.2,
@@ -114,10 +162,9 @@ def _gemini(jpeg: bytes, api_key: str) -> VisionVerdict:
     )
     text = getattr(response, "text", None) or ""
     if not text and getattr(response, "candidates", None):
-        # Fallback scrape
         parts = response.candidates[0].content.parts
         text = "".join(getattr(p, "text", "") or "" for p in parts)
-    return _normalize(_extract_json(text), "gemini")
+    return _normalize(_extract_json(text), f"gemini:{model}")
 
 
 def _groq(jpeg: bytes, api_key: str, model: str) -> VisionVerdict:
@@ -143,7 +190,37 @@ def _groq(jpeg: bytes, api_key: str, model: str) -> VisionVerdict:
         ],
     )
     text = completion.choices[0].message.content or ""
-    return _normalize(_extract_json(text), "groq")
+    return _normalize(_extract_json(text), f"groq:{model}")
+
+
+def _try_gemini(
+    jpeg: bytes,
+    api_key: str,
+    model: str,
+    deadline: float,
+    *,
+    retry_transient: bool,
+) -> VisionVerdict:
+    label = f"gemini:{model}"
+
+    def call() -> VisionVerdict:
+        return _gemini(jpeg, api_key, model)
+
+    try:
+        return _run_within(call, deadline, label)
+    except Exception as exc:
+        if not retry_transient or not _is_transient(exc):
+            raise
+        sleep_for = min(GEMINI_RETRY_SLEEP_S, max(0.0, _remaining(deadline) - 0.2))
+        log.warning(
+            "%s transient failure (%s) — retry in %.1fs",
+            label,
+            exc,
+            sleep_for,
+        )
+        if sleep_for > 0:
+            time.sleep(sleep_for)
+        return _run_within(call, deadline, f"{label}:retry")
 
 
 def analyze_snapshot(
@@ -151,29 +228,72 @@ def analyze_snapshot(
     *,
     gemini_api_key: str,
     groq_api_key: str,
-    groq_model: str = "meta-llama/llama-4-scout-17b-16e-instruct",
+    gemini_model: str = "gemini-3.8-flash",
+    gemini_fallback_model: str = "",
+    groq_model: str = "",
 ) -> VisionVerdict:
-    """Gemini first; on failure retry once with Groq; then fail-safe."""
-    if gemini_api_key:
-        try:
-            verdict = _gemini(jpeg, gemini_api_key)
-            log.info("Gemini verdict: %s", verdict.as_dict())
-            return verdict
-        except Exception as exc:
-            log.warning("Gemini failed: %s — trying Groq", exc)
-    else:
-        log.warning("GEMINI_API_KEY missing — trying Groq")
+    """Gemini (+ transient retry) → Gemini fallback → Groq → fail-safe.
 
-    if groq_api_key:
+    Whole check is capped at ~VISION_BUDGET_S so a slow model never stalls the call.
+    """
+    deadline = time.monotonic() + VISION_BUDGET_S
+
+    if gemini_api_key and gemini_model:
         try:
-            verdict = _groq(jpeg, groq_api_key, groq_model)
-            log.info("Groq verdict: %s", verdict.as_dict())
+            verdict = _try_gemini(
+                jpeg,
+                gemini_api_key,
+                gemini_model,
+                deadline,
+                retry_transient=True,
+            )
+            log.info("vision answered via %s", verdict.source)
             return verdict
         except Exception as exc:
-            log.warning("Groq failed: %s — fail-safe", exc)
+            log.warning("Gemini primary failed: %s", exc)
+    elif not gemini_api_key:
+        log.warning("GEMINI_API_KEY missing")
     else:
-        log.warning("GROQ_API_KEY missing — fail-safe")
+        log.warning("GEMINI_MODEL empty")
+
+    if gemini_api_key and gemini_fallback_model and gemini_fallback_model != gemini_model:
+        if _remaining(deadline) <= 0.05:
+            log.warning("vision budget exhausted — skip Gemini fallback")
+        else:
+            try:
+                verdict = _try_gemini(
+                    jpeg,
+                    gemini_api_key,
+                    gemini_fallback_model,
+                    deadline,
+                    retry_transient=False,
+                )
+                log.info("vision answered via %s", verdict.source)
+                return verdict
+            except Exception as exc:
+                log.warning("Gemini fallback failed: %s", exc)
+    elif gemini_fallback_model and gemini_fallback_model == gemini_model:
+        log.info("GEMINI_FALLBACK_MODEL same as primary — skip")
+
+    if groq_model and groq_api_key:
+        if _remaining(deadline) <= 0.05:
+            log.warning("vision budget exhausted — skip Groq")
+        else:
+            try:
+                verdict = _run_within(
+                    lambda: _groq(jpeg, groq_api_key, groq_model),
+                    deadline,
+                    f"groq:{groq_model}",
+                )
+                log.info("vision answered via %s", verdict.source)
+                return verdict
+            except Exception as exc:
+                log.warning("Groq failed: %s", exc)
+    elif groq_model and not groq_api_key:
+        log.warning("GROQ_API_KEY missing — skip Groq")
+    elif not groq_model:
+        log.info("GROQ_VISION_MODEL empty — skip Groq")
 
     verdict = _failsafe()
-    log.warning("Fail-safe verdict: %s", verdict.as_dict())
+    log.warning("Fail-safe verdict after budget/attempts: %s", verdict.as_dict())
     return verdict

@@ -24,6 +24,22 @@ class CallResult:
     error: Optional[str] = None
 
 
+def format_event_time_hi(dt: datetime) -> str:
+    """Spoken Hindi 12-hour time, e.g. 'raat 2:38 baje'."""
+    hour = dt.hour
+    minute = dt.minute
+    hour12 = hour % 12 or 12
+    if 4 <= hour < 12:
+        period = "subah"
+    elif 12 <= hour < 16:
+        period = "dopahar"
+    elif 16 <= hour < 21:
+        period = "shaam"
+    else:
+        period = "raat"
+    return f"{period} {hour12}:{minute:02d} baje"
+
+
 def build_payload(
     *,
     agent_id: str,
@@ -34,7 +50,7 @@ def build_payload(
     event_time: datetime | str,
 ) -> dict[str, Any]:
     if isinstance(event_time, datetime):
-        event_time_s = event_time.isoformat(timespec="seconds")
+        event_time_s = format_event_time_hi(event_time)
     else:
         event_time_s = str(event_time)
     return {

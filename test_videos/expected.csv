@@ -1,0 +1,6 @@
+file,expect_alert,expect_category,expect_action
+empty.mp4,no,,none
+intruder.mp4,yes,intrusion_after_hours,call_owner
+forced_entry.mp4,yes,forced_entry,call_owner
+loitering.mp4,yes,loitering,log_only
+pet.mp4,no,,none

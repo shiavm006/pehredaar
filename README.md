@@ -121,6 +121,59 @@ Restart the brain, then `./scripts/send_fake_alert.sh` (or walk in). Your phone 
 
 Incidents append to `logs/incidents.jsonl`.
 
+### Video test harness (full real pipeline)
+
+Runs each clip in `test_videos/` through **real** MediaMTX → Frigate → MQTT → brain (no fake MQTT). Results land in `test_results/<timestamp>.md`.
+
+**Prereqs**
+
+1. Put clips next to the CSV (names must match `test_videos/expected.csv`):
+
+   ```text
+   test_videos/
+     expected.csv
+     empty.mp4
+     intruder.mp4
+     forced_entry.mp4
+     loitering.mp4
+     pet.mp4
+   ```
+
+2. In `.env`: `DRY_RUN=true`, `ARMED=true`, `COOLDOWN_SECONDS=30` (code default remains 180).
+
+3. Start stack + brain, then the harness:
+
+   ```bash
+   docker compose up -d
+   # separate terminal:
+   source .venv/bin/activate && python -m brain.main
+   # separate terminal:
+   chmod +x scripts/run_video_tests.sh
+   ./scripts/run_video_tests.sh
+   ```
+
+   Wait per clip is configurable (`--wait 40`, `--settle 10`, or env `VIDEO_TEST_WAIT_S` / `VIDEO_TEST_SETTLE_S`).
+
+**Add a new test video**
+
+1. Drop `my_case.mp4` into `test_videos/`.
+2. Append a row to `test_videos/expected.csv`:
+
+   ```csv
+   my_case.mp4,yes,intrusion_after_hours,call_owner
+   ```
+
+   Columns: `file`, `expect_alert` (`yes`/`no`), `expect_category` (empty when no alert), `expect_action` (`call_owner` / `log_only` / `none`).
+
+3. Re-run `./scripts/run_video_tests.sh` (or `--only my_case.mp4`).
+
+**Live phone check (single clip)**
+
+```bash
+# .env: DRY_RUN=false, OWNER_PHONE verified, Bolna keys set, brain restarted
+./scripts/run_video_tests.sh --only intruder.mp4
+```
+
 ## Stop
 
 ```bash
@@ -142,9 +195,12 @@ rm -rf media/* config/*.db config/*.db-*
 ├── docker-compose.yml
 ├── scripts/start_camera.sh      # MediaMTX + ffmpeg (webcam or --video loop)
 ├── scripts/send_fake_alert.sh   # republish tests/fixtures/review_new.json
+├── scripts/run_video_tests.sh   # full-pipeline video harness
 ├── brain/                       # MQTT → vision → Bolna
 ├── config/config.yml
 ├── mosquitto/mosquitto.conf
+├── test_videos/expected.csv     # harness expectations (mp4s gitignored)
+├── test_results/                # harness markdown reports (gitignored)
 ├── tests/fixtures/review_new.json
 ├── media/                       # recordings (gitignored)
 ├── logs/incidents.jsonl         # gitignored

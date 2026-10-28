@@ -22,6 +22,8 @@ config/.search_stats.json
 config/go2rtc_homekit.yml
 testdata/*
 !testdata/.gitkeep
+test_videos/*.mp4
+test_results/
 *.pid
 .DS_Store
 auto.crt
