@@ -8,11 +8,17 @@ Snapshot endpoint (Frigate 0.18 docs):
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import requests
 
 log = logging.getLogger("pehredaar.frigate")
+
+# Frigate ids look like "1793221724.483321-ybdijc". The id arrives over MQTT,
+# which is an anonymous broker — anything with "/" or ".." would escape the
+# /api/events/ prefix once requests normalises the path.
+EVENT_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 
 class FrigateError(RuntimeError):
@@ -34,6 +40,8 @@ def fetch_event_snapshot(
     timeout: float = 15.0,
 ) -> bytes:
     """Download JPEG snapshot for a tracked-object / event id."""
+    if not EVENT_ID_RE.match(event_id) or ".." in event_id:
+        raise FrigateError(f"refusing malformed event_id: {event_id!r}")
     url = f"{base_url.rstrip('/')}/api/events/{event_id}/snapshot.jpg"
     log.info("GET %s", url)
     try:

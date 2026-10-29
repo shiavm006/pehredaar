@@ -8,7 +8,10 @@ services:
     container_name: pehredaar-mosquitto
     restart: unless-stopped
     ports:
-      - "1883:1883"
+      # Loopback only: the broker is anonymous (see mosquitto.conf), so a
+      # 0.0.0.0 bind lets anyone on the same wifi publish a fake review and
+      # trigger a real phone call. Frigate reaches it over the compose network.
+      - "127.0.0.1:1883:1883"
     volumes:
       - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
 
@@ -22,9 +25,10 @@ services:
     shm_size: "256mb"
     ports:
       # Authenticated UI/API (Frigate 0.14+)
-      - "8971:8971"
+      - "127.0.0.1:8971:8971"
       # Unauthenticated UI for local testing. Host 5001 avoids macOS AirPlay on :5000.
-      - "5001:5000"
+      # Loopback only — :5000 has no auth and serves the live feed + recordings.
+      - "127.0.0.1:5001:5000"
     volumes:
       - ./config:/config
       - ./media:/media/frigate

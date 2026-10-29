@@ -28,3 +28,7 @@ test_results/
 .DS_Store
 auto.crt
 auto.key
+
+# Local .env backups must never be committed
+.env.bak*
+.env.local
