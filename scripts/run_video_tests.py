@@ -126,7 +126,7 @@ def load_expected(path: Path, only: Optional[str]) -> list[ExpectRow]:
         reader = csv.DictReader(fh)
         for raw in reader:
             file_name = (raw.get("file") or "").strip()
-            if not file_name:
+            if not file_name or file_name.startswith("#"):
                 continue
             if only and file_name != only and Path(file_name).stem != Path(only).stem:
                 continue

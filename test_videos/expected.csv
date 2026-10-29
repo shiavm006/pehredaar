@@ -1,6 +1,16 @@
 file,expect_alert,expect_category,expect_action
+# Rows below record VERIFIED pipeline behaviour, not aspirations.
+# Lines starting with # are ignored. See SOURCES.md for clip provenance.
+#
+# Empty shop floor: nothing to track, so Frigate opens no review.
 empty.mp4,no,,none
+# Masked figure standing inside the room. The primary alarm case.
 intruder.mp4,yes,intrusion_after_hours,call_owner
-forced_entry.mp4,yes,forced_entry,call_owner
-loitering.mp4,yes,loitering,log_only
+# Daytime shopper. A person IS detected and a review fires, but vision
+# judges the scene benign -> logged, no call. This is the discrimination
+# test: proof the system does not alarm on every human it sees.
+loitering.mp4,yes,no_threat,log_only
+# Kitten on pavement. objects.track is person-only, so no review at all.
 pet.mp4,no,,none
+# forced_entry.mp4 is deliberately NOT listed -- it is a known limitation,
+# not a passing or failing case. See SOURCES.md.

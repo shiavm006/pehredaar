@@ -37,7 +37,10 @@ services:
         tmpfs:
           size: 1000000000
     environment:
-      FRIGATE_RTSP_PASSWORD: pehredaar
+      # Credential for Frigate's internal RTSP restream, which is reachable
+      # only inside the compose network and over loopback. Override in .env;
+      # the default keeps a fresh clone working out of the box.
+      FRIGATE_RTSP_PASSWORD: ${FRIGATE_RTSP_PASSWORD:-pehredaar}
     extra_hosts:
       # Frigate → MediaMTX on the Mac host at host.docker.internal:8554
       - "host.docker.internal:host-gateway"

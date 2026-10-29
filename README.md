@@ -127,17 +127,15 @@ Runs each clip in `test_videos/` through **real** MediaMTX → Frigate → MQTT 
 
 **Prereqs**
 
-1. Put clips next to the CSV (names must match `test_videos/expected.csv`):
+1. Fetch the clips. The mp4s are gitignored, so a fresh clone has none:
 
-   ```text
-   test_videos/
-     expected.csv
-     empty.mp4
-     intruder.mp4
-     forced_entry.mp4
-     loitering.mp4
-     pet.mp4
+   ```bash
+   ./scripts/fetch_test_videos.sh
    ```
+
+   Downloads every clip listed in `test_videos/SOURCES.tsv` (Mixkit,
+   royalty-free) and skips any already present. Provenance and a documented
+   detector limitation are in `test_videos/SOURCES.md`.
 
 2. In `.env`: `DRY_RUN=true`, `ARMED=true`, `COOLDOWN_SECONDS=30` (code default remains 180).
 
@@ -153,6 +151,19 @@ Runs each clip in `test_videos/` through **real** MediaMTX → Frigate → MQTT 
    ```
 
    Wait per clip is configurable (`--wait 40`, `--settle 10`, or env `VIDEO_TEST_WAIT_S` / `VIDEO_TEST_SETTLE_S`).
+
+   **Known issue — prefer `--only` for trustworthy results.** Frigate keeps a
+   single review open across back-to-back clips: each clip re-triggers activity
+   and extends the same review, so only the first publishes `type=new` and the
+   rest report "no incident in window". The harness clears the frame, drops RTSP
+   and polls `/api/review` for an idle camera, but gives up after 45s and prints
+   `review still open — continuing anyway`, which surfaces as FAIL when
+   INCONCLUSIVE is the honest result. Until that is fixed, run one clip at a
+   time:
+
+   ```bash
+   ./scripts/run_video_tests.sh --only intruder.mp4
+   ```
 
 **Add a new test video**
 
@@ -195,6 +206,7 @@ rm -rf media/* config/*.db config/*.db-*
 ├── docker-compose.yml
 ├── scripts/start_camera.sh      # MediaMTX + ffmpeg (webcam or --video loop)
 ├── scripts/send_fake_alert.sh   # republish tests/fixtures/review_new.json
+├── scripts/fetch_test_videos.sh # download harness clips from SOURCES.tsv
 ├── scripts/run_video_tests.sh   # full-pipeline video harness
 ├── brain/                       # MQTT → vision → Bolna
 ├── config/config.yml
