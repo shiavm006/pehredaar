@@ -22,8 +22,18 @@ CATEGORIES = (
 )
 CONFIDENCES = ("high", "medium", "low")
 
-VISION_BUDGET_S = 8.0
+VISION_BUDGET_S = 15.0
 GEMINI_RETRY_SLEEP_S = 1.0
+# Measured flash-lite latency is 2.1-2.7s on 40-85KB snapshots; a busy frame can
+# exceed 4s. Give the primary ~2.5x headroom — falling through to the generic
+# fail-safe text costs far more (owner hears "check the camera" instead of what
+# is actually in the shop) than a few extra seconds before the call.
+PRIMARY_BUDGET_S = 7.0
+FALLBACK_MIN_S = 4.0
+# Below this there is no point retrying or starting another model.
+MIN_ATTEMPT_S = 1.5
+# One spoken sentence; the agent reads description_hi down the phone.
+MAX_DESCRIPTION_CHARS = 300
 
 VISION_PROMPT = """You are a shop security camera analyst for after-hours monitoring.
 
@@ -84,11 +94,14 @@ def _normalize(raw: dict[str, Any], source: str) -> VisionVerdict:
     if not description_en or not description_hi:
         raise ValueError("missing description_en or description_hi")
 
+    # description_hi is spoken aloud by the Bolna agent. The model is told to
+    # return one sentence, but a strange frame (or text held up to the camera)
+    # can produce a wall of text — clamp so the owner hears something usable.
     return VisionVerdict(
         category=category,
         confidence=confidence,
-        description_en=description_en,
-        description_hi=description_hi,
+        description_en=description_en[:MAX_DESCRIPTION_CHARS],
+        description_hi=description_hi[:MAX_DESCRIPTION_CHARS],
         source=source,
     )
 
@@ -138,12 +151,16 @@ def _run_within(fn: Callable[[], VisionVerdict], deadline: float, label: str) ->
     if rem <= 0.05:
         raise TimeoutError(f"vision budget exhausted before {label}")
     log.info("vision attempt: %s (%.1fs left)", label, rem)
-    with ThreadPoolExecutor(max_workers=1) as pool:
+    # wait=False: a hung HTTP call must not block past the vision budget.
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
         fut = pool.submit(fn)
         try:
             return fut.result(timeout=rem)
         except FuturesTimeout as exc:
             raise TimeoutError(f"{label} exceeded remaining budget") from exc
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def _gemini(jpeg: bytes, api_key: str, model: str) -> VisionVerdict:
@@ -211,6 +228,11 @@ def _try_gemini(
     except Exception as exc:
         if not retry_transient or not _is_transient(exc):
             raise
+        # A timeout already consumed the budget — retrying just logs noise and
+        # steals time the fallback model could use.
+        if _remaining(deadline) < MIN_ATTEMPT_S:
+            log.info("%s failed with %.1fs left — skip retry, fall through", label, _remaining(deadline))
+            raise
         sleep_for = min(GEMINI_RETRY_SLEEP_S, max(0.0, _remaining(deadline) - 0.2))
         log.warning(
             "%s transient failure (%s) — retry in %.1fs",
@@ -237,6 +259,7 @@ def analyze_snapshot(
     Whole check is capped at ~VISION_BUDGET_S so a slow model never stalls the call.
     """
     deadline = time.monotonic() + VISION_BUDGET_S
+    primary_deadline = time.monotonic() + PRIMARY_BUDGET_S
 
     if gemini_api_key and gemini_model:
         try:
@@ -244,7 +267,7 @@ def analyze_snapshot(
                 jpeg,
                 gemini_api_key,
                 gemini_model,
-                deadline,
+                min(deadline, primary_deadline),
                 retry_transient=True,
             )
             log.info("vision answered via %s", verdict.source)
@@ -257,26 +280,32 @@ def analyze_snapshot(
         log.warning("GEMINI_MODEL empty")
 
     if gemini_api_key and gemini_fallback_model and gemini_fallback_model != gemini_model:
-        if _remaining(deadline) <= 0.05:
-            log.warning("vision budget exhausted — skip Gemini fallback")
+        # Prefer remaining overall budget; if primary burned it, carve FALLBACK_MIN_S.
+        if _remaining(deadline) >= MIN_ATTEMPT_S:
+            fallback_deadline = deadline
         else:
-            try:
-                verdict = _try_gemini(
-                    jpeg,
-                    gemini_api_key,
-                    gemini_fallback_model,
-                    deadline,
-                    retry_transient=False,
-                )
-                log.info("vision answered via %s", verdict.source)
-                return verdict
-            except Exception as exc:
-                log.warning("Gemini fallback failed: %s", exc)
+            fallback_deadline = time.monotonic() + FALLBACK_MIN_S
+            log.warning(
+                "extending %.1fs for Gemini fallback after primary timeout",
+                FALLBACK_MIN_S,
+            )
+        try:
+            verdict = _try_gemini(
+                jpeg,
+                gemini_api_key,
+                gemini_fallback_model,
+                fallback_deadline,
+                retry_transient=False,
+            )
+            log.info("vision answered via %s", verdict.source)
+            return verdict
+        except Exception as exc:
+            log.warning("Gemini fallback failed: %s", exc)
     elif gemini_fallback_model and gemini_fallback_model == gemini_model:
         log.info("GEMINI_FALLBACK_MODEL same as primary — skip")
 
     if groq_model and groq_api_key:
-        if _remaining(deadline) <= 0.05:
+        if _remaining(deadline) < MIN_ATTEMPT_S:
             log.warning("vision budget exhausted — skip Groq")
         else:
             try:
