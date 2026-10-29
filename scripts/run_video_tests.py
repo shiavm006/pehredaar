@@ -24,7 +24,8 @@ INCIDENTS_LOG = ROOT / "logs" / "incidents.jsonl"
 CAMERA_SCRIPT = ROOT / "scripts" / "start_camera.sh"
 RESULTS_DIR = ROOT / "test_results"
 DEFAULT_WAIT_S = 40.0
-DEFAULT_SETTLE_S = 10.0
+DEFAULT_SETTLE_S = 15.0
+DEFAULT_DRAIN_S = 20.0  # wait for brain to finish writing incidents
 
 try:
     from dotenv import load_dotenv
@@ -256,11 +257,72 @@ def stop_process(proc: subprocess.Popen[Any]) -> None:
         proc.wait(timeout=5)
 
 
+def stop_mediamtx() -> None:
+    """Drop RTSP so Frigate ends the open review between clips."""
+    killed = False
+    pid_path = Path("/tmp/pehredaar-mediamtx.pid")
+    if pid_path.is_file():
+        try:
+            pid = int(pid_path.read_text().strip())
+            os.kill(pid, signal.SIGTERM)
+            killed = True
+        except (ValueError, ProcessLookupError, OSError):
+            pass
+        try:
+            pid_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    # Also clear whatever is bound to :8554 (reused MediaMTX without pid file).
+    try:
+        out = subprocess.check_output(
+            ["lsof", "-tiTCP:8554", "-sTCP:LISTEN"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+        for pid_s in out.split():
+            try:
+                os.kill(int(pid_s), signal.SIGTERM)
+                killed = True
+            except (ValueError, ProcessLookupError, OSError):
+                pass
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        pass
+    if killed:
+        print("stopped MediaMTX / :8554 to close Frigate review")
+    time.sleep(2)
+
+
+def wait_for_idle_review(frigate_url: str, timeout_s: float = 45.0) -> None:
+    """Wait until Frigate has no open (end_time=null) shopcam review."""
+    url = frigate_url.rstrip("/") + "/api/review?limit=5"
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            with urlopen(url, timeout=3) as resp:
+                items = json.loads(resp.read().decode("utf-8"))
+            if not isinstance(items, list):
+                items = []
+            open_reviews = [
+                r
+                for r in items
+                if r.get("camera") == "shopcam" and r.get("end_time") is None
+            ]
+            if not open_reviews:
+                return
+            print(f"  waiting for Frigate review to end ({len(open_reviews)} open) …")
+        except Exception as exc:
+            print(f"  review poll failed: {exc}")
+        time.sleep(2)
+    print("  warning: Frigate review still open — continuing anyway")
+
+
 def run_video_case(
     expect: ExpectRow,
     *,
     wait_s: float,
     settle_s: float,
+    drain_s: float,
+    frigate_url: str,
 ) -> CaseResult:
     video_path = ROOT / "test_videos" / expect.file
     if not video_path.is_file():
@@ -277,6 +339,8 @@ def run_video_case(
         )
 
     print(f"\n=== {expect.file} ===")
+    print("ensuring previous Frigate review closed …")
+    wait_for_idle_review(frigate_url)
     print(f"publishing {video_path} for {wait_s:.0f}s …")
     env = os.environ.copy()
     env["PEHREDAAR_KEEP_MTX"] = "1"
@@ -295,12 +359,44 @@ def run_video_case(
         print("stopping publisher …")
         stop_process(proc)
 
+    # Clear the frame with empty.mp4 so Frigate drops the person track, then
+    # tear down RTSP so the review can end before the next clip.
+    empty_clip = ROOT / "test_videos" / "empty.mp4"
+    if expect.expect_alert and empty_clip.is_file() and expect.file != "empty.mp4":
+        print("clearing frame with empty.mp4 (12s) …")
+        env = os.environ.copy()
+        env["PEHREDAAR_KEEP_MTX"] = "1"
+        clearer = subprocess.Popen(
+            ["bash", str(CAMERA_SCRIPT), "--video", str(empty_clip)],
+            cwd=str(ROOT),
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        try:
+            time.sleep(12)
+        finally:
+            stop_process(clearer)
+
+    stop_mediamtx()
+
     if settle_s > 0:
         print(f"settle {settle_s:.0f}s for Frigate review end …")
         time.sleep(settle_s)
-    end = _now_local()
+    wait_for_idle_review(frigate_url, timeout_s=max(90.0, settle_s * 3))
 
+    # Brain may still be finishing vision after MQTT; poll for late writes.
+    end = _now_local()
     incidents = read_incidents_in_window(INCIDENTS_LOG, start, end)
+    if expect.expect_alert and not incidents and drain_s > 0:
+        print(f"drain {drain_s:.0f}s waiting for brain incident log …")
+        drain_deadline = time.time() + drain_s
+        while time.time() < drain_deadline and not incidents:
+            time.sleep(2)
+            end = _now_local()
+            incidents = read_incidents_in_window(INCIDENTS_LOG, start, end)
+
     print(f"incidents in window: {len(incidents)}")
     for rec in incidents:
         print(
@@ -408,6 +504,12 @@ def main() -> int:
         help=f"seconds to wait after stop for Frigate to end review (default {DEFAULT_SETTLE_S})",
     )
     parser.add_argument(
+        "--drain",
+        type=float,
+        default=float(os.getenv("VIDEO_TEST_DRAIN_S", DEFAULT_DRAIN_S)),
+        help=f"extra seconds to wait for brain to append incidents (default {DEFAULT_DRAIN_S})",
+    )
+    parser.add_argument(
         "--only",
         default="",
         help="run a single CSV file row, e.g. intruder.mp4",
@@ -452,9 +554,15 @@ def main() -> int:
         if i > 0 and prev_had_alert and cooldown_s > 0:
             print(f"\ninter-test cooldown gap {cooldown_s:.0f}s …")
             time.sleep(cooldown_s)
-        result = run_video_case(row, wait_s=args.wait, settle_s=args.settle)
+        result = run_video_case(
+            row,
+            wait_s=args.wait,
+            settle_s=args.settle,
+            drain_s=args.drain,
+            frigate_url=frigate_url,
+        )
         results.append(result)
-        prev_had_alert = result.got_alert == "yes"
+        prev_had_alert = result.got_alert == "yes" or row.expect_alert
 
     table = format_table(results)
     print("\n" + table)
